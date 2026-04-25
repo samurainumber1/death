@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyd
+.venv/
+build/
+devbuilds/
+devassets/
+dist/
+.vscode/
+.DS_Store
+Thumbs.db
+main.spec

@@ -15,7 +15,6 @@ import pieces
 import tunnel
 import drawicon
 import invert
-import scramble
 import shaker
 
 pygame.mixer.init()
@@ -438,7 +437,7 @@ def open_debug_menu():
 
     title = tk.Label(
         container,
-        text="Debug Menu",
+        text="death controller",
         bg="#202020",
         fg="white",
         font=("Segoe UI", 12, "bold")
@@ -447,7 +446,7 @@ def open_debug_menu():
 
     subtitle = tk.Label(
         container,
-        text="Use this to test stages and payloads without the scripted timeline.",
+        text="test death, simulate death, explore death",
         bg="#202020",
         fg="#d0d0d0",
         justify="left",
@@ -513,43 +512,6 @@ def open_debug_menu():
     tk.Button(actions_frame, text="Toggle DrawIcon", width=14, command=toggle_drawicon_debug).grid(row=2, column=0, padx=2, pady=2)
     tk.Button(actions_frame, text="Toggle Floating", width=14, command=toggle_floating_icons_debug).grid(row=2, column=1, padx=2, pady=2)
     tk.Button(actions_frame, text="Toggle Shaker", width=14, command=toggle_shaker_debug).grid(row=2, column=2, padx=2, pady=2)
-
-    scramble_frame = tk.LabelFrame(
-        container,
-        text="Scramble",
-        bg="#202020",
-        fg="white",
-        padx=8,
-        pady=8
-    )
-    scramble_frame.pack(fill="x", pady=(12, 0))
-
-    scramble_times = tk.IntVar(value=50)
-    scramble_delay = tk.IntVar(value=5)
-
-    tk.Label(scramble_frame, text="Times", bg="#202020", fg="white").grid(row=0, column=0, sticky="w")
-    tk.Spinbox(scramble_frame, from_=1, to=500, textvariable=scramble_times, width=8).grid(row=0, column=1, padx=(6, 12))
-    tk.Label(scramble_frame, text="Delay ms", bg="#202020", fg="white").grid(row=0, column=2, sticky="w")
-    tk.Spinbox(scramble_frame, from_=1, to=1000, textvariable=scramble_delay, width=8).grid(row=0, column=3, padx=(6, 0))
-
-    tk.Button(
-        scramble_frame,
-        text="Start Scramble",
-        width=14,
-        command=lambda: scramble.start(scramble_times.get(), scramble_delay.get())
-    ).grid(row=1, column=0, columnspan=2, pady=(10, 0), padx=2, sticky="w")
-    tk.Button(
-        scramble_frame,
-        text="Set Delay",
-        width=14,
-        command=lambda: scramble.setdelay(scramble_delay.get())
-    ).grid(row=1, column=2, pady=(10, 0), padx=2, sticky="w")
-    tk.Button(
-        scramble_frame,
-        text="Restore Icons",
-        width=14,
-        command=scramble.restore
-    ).grid(row=1, column=3, pady=(10, 0), padx=2, sticky="w")
 
     footer = tk.Frame(container, bg="#202020")
     footer.pack(fill="x", pady=(12, 0))

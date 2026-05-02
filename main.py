@@ -2,6 +2,8 @@
 
 import tkinter as tk
 import random
+import subprocess
+import winreg
 import os
 import json
 import keyboard
@@ -47,9 +49,9 @@ PIECES_TIMER_SETTINGS = {
     10: 5,
     11: 5000,
     12: 7500,
-    13: 10000,
-    14: 9999999,
-    15: 9999999
+    13: 200,
+    14: 400,
+    15: 1
 }
 
 # Timing maps
@@ -103,8 +105,8 @@ ERROR_SOUND_INTERVALS = {
     11: 50,
     12: 60,
     13: 70,
-    14: 99000,
-    15: 99000,
+    14: 50,
+    15: 70,
 }
 
 ERROR_ICON_SPAWN_INTERVALS = {
@@ -114,15 +116,15 @@ ERROR_ICON_SPAWN_INTERVALS = {
     4: 1000,
     5: 600,
     6: 300,
-    7: 200,
-    8: 1,
-    9: 20,
-    10: 40,
-    11: 1,
-    12: 1,
-    13: 1,
-    14: 1,
-    15: 1,
+    7: 50,
+    8: 1234,
+    9: 1234,
+    10: 1234,
+    11: 1234,
+    12: 1234,
+    13: 1234,
+    14: 1234,
+    15: 1234,
 }
 
 ERROR_ICON_LIFETIMES = {
@@ -143,7 +145,7 @@ ERROR_ICON_LIFETIMES = {
     15: 30000,
 }
 
-TUNNEL_EFFECT_INTERVALS = {5: 3.0, 6: 2.0, 7: 1.0, 8: 0.5, 9: 0.2, 10: 0.001}
+TUNNEL_EFFECT_INTERVALS = {5: 3.0, 6: 2.0, 7: 1.0, 8: 0.5, 9: 0.2, 10: 0.001, 11: 0.2, 12: 0.2, 13: 0.001, 14: 0.001, 15: 0.001}
 INVERT_INTERVALS = {
     4: 5000,
     5: 3000,
@@ -152,24 +154,24 @@ INVERT_INTERVALS = {
     8: 800,
     9: 400,
     10: 200,
-    11: 1000,
-    12: 6700,
-    13: 2500,
-    14: 5000,
-    15: 8000,
+    11: 200,
+    12: 100,
+    13: 50,
+    14: 30,
+    15: 1,
 }
 DRAWICON_INTERVALS = {
     5: 1000,
     6: 700,
     7: 400,
-    8: 200,
+    8: 30,
     9: 30,
-    10: 10,
-    11: 400,
-    12: 800,
-    13: 1500,
-    14: 3000,
-    15: 9000,
+    10: 30,
+    11: 30,
+    12: 30,
+    13: 30,
+    14: 30,
+    15: 1,
 }
 SHAKER_INTENSITIES = {
     3: 0.10,
@@ -178,8 +180,15 @@ SHAKER_INTENSITIES = {
     6: 0.40,
     7: 0.55,
     8: 0.75,
+    9: 0.86,
+    10: 1.00,
+    11: 1.00,
+    12: 1.00,
+    13: 1.00,
+    14: 1.00,
+    15: 1.00
 }
-FLOATING_ICON_DISABLED_STAGES = {8, 9, 10}
+FLOATING_ICON_DISABLED_STAGES = {8, 9, 10, 11, 12, 13, 14, 15}
 debug_window = None
 tunnel_active = False
 drawicon_active = False
@@ -193,7 +202,8 @@ assets_dir = os.path.join(script_dir, "assets")
 icon_files = {
     "error": os.path.join(assets_dir, "error.png"),
     "warning": os.path.join(assets_dir, "warning.png"),
-    "info": os.path.join(assets_dir, "info.png")
+    "info": os.path.join(assets_dir, "info.png"),
+    "death": os.path.join(assets_dir, "death.png"),
 }
 
 loaded_icons = {}
@@ -685,10 +695,6 @@ def f4_emergency_kill():
     except Exception:
         pass
     shaker_active = False
-    try:
-        scramble.restore()
-    except Exception:
-        pass
     global running
     running = False
     # Close fake windows.
@@ -743,10 +749,6 @@ def f7_remove_immediately():
     except Exception:
         pass
     shaker_active = False
-    try:
-        scramble.restore()
-    except Exception:
-        pass
 
 keyboard.add_hotkey("F7", f7_remove_immediately)
 keyboard.add_hotkey("F4", f4_emergency_kill)
@@ -789,8 +791,8 @@ def set_stage(new_stage):
                 pass
             invert_active = False
 
-        # Shaker runs from stage 3 through stage 8.
-        if 3 <= stage < 9:
+        # Shaker runs from stage 3 through stage 13.
+        if 3 <= stage < 14:
             shaker.setIntensity(SHAKER_INTENSITIES[stage])
             shaker.start()
             shaker_active = True
@@ -801,8 +803,8 @@ def set_stage(new_stage):
                 pass
             shaker_active = False
         
-        # Tunnel runs only from stage 5 through stage 10.
-        if 5 <= stage <= 10:
+        # Tunnel runs only from stage 5 through stage 15.
+        if 5 <= stage <= 15:
             # Restart it with the new speed.
             try:
                 tunnel.stop()
@@ -877,8 +879,8 @@ def start_confirmation():
     win.attributes("-topmost", True)
     win.geometry(f"{w}x{h}+{x}+{y}")
 
-    title_color = "#102E6B"
-    bg_color = "#242424"
+    title_color = "#FD0000"
+    bg_color = "#500202"
 
     # Draggable title bar.
     title_bar = tk.Frame(win, bg=title_color, height=24)
@@ -900,7 +902,7 @@ def start_confirmation():
     canvas_bg = tk.Canvas(content_frame, width=w, height=h-24, bg=bg_color, highlightthickness=0)
     canvas_bg.pack(fill="both", expand=True)
 
-    icon_label = tk.Label(canvas_bg, image=loaded_icons["info"], bg=bg_color)
+    icon_label = tk.Label(canvas_bg, image=loaded_icons["death"], bg=bg_color)
     canvas_bg.create_window(20, 10, anchor="nw", window=icon_label)
 
     # Main message

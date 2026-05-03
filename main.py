@@ -12,12 +12,26 @@ from PIL import Image, ImageTk
 import winsound
 import time
 import ctypes
+import threading
 from ctypes import wintypes
 import pieces
-import tunnel
-import drawicon
 import invert
-import shaker
+
+##################
+### Start Mode ###
+##################
+mode = "warning" #
+##################
+# Just put it to "warning".
+##################
+# warning = Yes or No (Disallow debug)
+# warningdebug = Yes or No (Allow debug)
+# nowarning = No warning
+# debug = Debug mode
+# delay = Delayed by 10 seconds
+
+VALID_START_MODES = {"warning", "warningdebug", "nowarning", "debug", "delay"}
+START_DELAY_MS = 10000
 
 pygame.mixer.init()
 
@@ -26,6 +40,14 @@ root = tk.Tk()
 root.withdraw()
 screen_width = root.winfo_screenwidth()
 screen_height = root.winfo_screenheight()
+
+# theme paths
+DWM_PATH = r"Software\Microsoft\Windows\DWM"
+PERSONALIZE_PATH = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+
+RED_ACCENT = 0xff2311e8
+
+_saved_theme = None
 
 # Main settings
 window_width, window_height = 340, 120
@@ -195,6 +217,264 @@ drawicon_active = False
 invert_active = False
 shaker_active = False
 debug_force_floating_icons = False
+red_theme_active = False
+
+
+# Win32 desktop effects
+SRCCOPY = 0x00CC0020
+SM_CXICON = 11
+SM_CYICON = 12
+SM_CXSCREEN = 0
+SM_CYSCREEN = 1
+IDI_ERROR = 32513
+IDI_WARNING = 32515
+
+user32 = ctypes.windll.user32
+gdi32 = ctypes.windll.gdi32
+
+GetDesktopWindow = user32.GetDesktopWindow
+GetWindowDC = user32.GetWindowDC
+ReleaseDC = user32.ReleaseDC
+GetWindowRect = user32.GetWindowRect
+StretchBlt = gdi32.StretchBlt
+BitBlt = gdi32.BitBlt
+
+
+class RECT(ctypes.Structure):
+    _fields_ = [
+        ("left", wintypes.LONG),
+        ("top", wintypes.LONG),
+        ("right", wintypes.LONG),
+        ("bottom", wintypes.LONG),
+    ]
+
+
+class POINT(ctypes.Structure):
+    _fields_ = [("x", wintypes.LONG), ("y", wintypes.LONG)]
+
+
+def _make_resource_id(res_id):
+    return ctypes.cast(ctypes.c_void_p(res_id), wintypes.LPCWSTR)
+
+
+class TunnelEffect:
+    """Runs the tunnel effect on a loop."""
+
+    def __init__(self):
+        self.running = False
+        self.interval = 0.1
+        self.thread = None
+        self.times = 0
+
+    def tunnel(self):
+        try:
+            hwnd = GetDesktopWindow()
+            hdc = GetWindowDC(hwnd)
+            rect = RECT()
+            GetWindowRect(hwnd, ctypes.byref(rect))
+
+            StretchBlt(
+                hdc,
+                50,
+                50,
+                rect.right - 100,
+                rect.bottom - 100,
+                hdc,
+                0,
+                0,
+                rect.right,
+                rect.bottom,
+                SRCCOPY,
+            )
+
+            ReleaseDC(hwnd, hdc)
+            return True
+        except Exception as e:
+            print(f"Tunnel effect error: {e}")
+            return False
+
+    def start(self, interval=0.1):
+        if self.running:
+            return
+        self.interval = interval
+        self.running = True
+        self.times = 0
+        self.thread = threading.Thread(target=self._tunnel_loop, daemon=True)
+        self.thread.start()
+
+    def _tunnel_loop(self):
+        while self.running:
+            self.tunnel()
+            self.times += 1
+            time.sleep(self.interval)
+
+    def stop(self):
+        self.running = False
+        if self.thread:
+            self.thread.join(timeout=2.0)
+        self.times = 0
+
+
+class Shaker:
+    """Runs a global screen shake effect on a loop."""
+
+    def __init__(self):
+        self.running = False
+        self.thread = None
+        self.interval = 1.0 / 60.0
+        self.intensity = 0.0
+        self.times = 0
+
+    def shake(self):
+        try:
+            hwnd = GetDesktopWindow()
+            hdc = GetWindowDC(hwnd)
+            rect = RECT()
+            GetWindowRect(hwnd, ctypes.byref(rect))
+
+            strength = int(self.intensity * 30)
+            x_offset = random.randint(-strength, strength)
+            y_offset = random.randint(-strength, strength)
+
+            BitBlt(
+                hdc,
+                x_offset,
+                y_offset,
+                rect.right,
+                rect.bottom,
+                hdc,
+                0,
+                0,
+                SRCCOPY,
+            )
+
+            ReleaseDC(hwnd, hdc)
+            self.times += 1
+            return True
+        except Exception as e:
+            print(f"Shaker error: {e}")
+            return False
+
+    def start(self):
+        if self.running:
+            return
+        self.running = True
+        self.thread = threading.Thread(target=self._loop, daemon=True)
+        self.thread.start()
+
+    def _loop(self):
+        while self.running:
+            start = time.time()
+            self.shake()
+            sleep_time = self.interval - (time.time() - start)
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+
+    def stop(self):
+        self.running = False
+        if self.thread:
+            self.thread.join(timeout=2.0)
+        self.times = 0
+
+    def set_intensity(self, value):
+        self.intensity = max(0, min(1, value))
+
+
+class DrawIconEffect:
+    def __init__(self):
+        self.running = False
+        self.thread = None
+        self.stop_event = threading.Event()
+        self.interval = 5.0
+        self.times = 0
+
+    def draw_once(self):
+        ix = user32.GetSystemMetrics(SM_CXICON) // 2
+        iy = user32.GetSystemMetrics(SM_CYICON) // 2
+        hwnd = user32.GetDesktopWindow()
+        hdc = user32.GetWindowDC(hwnd)
+        try:
+            cursor = POINT()
+            if user32.GetCursorPos(ctypes.byref(cursor)) == 0:
+                return
+
+            error_icon = user32.LoadIconW(None, _make_resource_id(IDI_ERROR))
+            warning_icon = user32.LoadIconW(None, _make_resource_id(IDI_WARNING))
+
+            user32.DrawIcon(hdc, cursor.x - ix, cursor.y - iy, error_icon)
+
+            screen_width = user32.GetSystemMetrics(SM_CXSCREEN)
+            screen_height = user32.GetSystemMetrics(SM_CYSCREEN)
+            threshold = int(10 / (self.times / 500.0 + 1) + 1)
+            threshold = max(1, threshold)
+
+            if random.randrange(threshold) == 0:
+                x = random.randrange(max(1, screen_width))
+                y = random.randrange(max(1, screen_height))
+                user32.DrawIcon(hdc, x, y, warning_icon)
+        finally:
+            user32.ReleaseDC(hwnd, hdc)
+
+    def _loop(self):
+        while not self.stop_event.wait(self.interval):
+            self.times += 1
+            self.draw_once()
+
+    def set_interval(self, interval_ms):
+        self.interval = max(interval_ms / 1000.0, 0.01)
+
+    def start(self, interval_ms=5000):
+        if self.running:
+            self.set_interval(interval_ms)
+            return
+        self.set_interval(interval_ms)
+        self.stop_event.clear()
+        self.thread = threading.Thread(target=self._loop, daemon=True)
+        self.running = True
+        self.thread.start()
+
+    def stop(self):
+        if not self.running:
+            return
+        self.stop_event.set()
+        if self.thread is not None:
+            self.thread.join(timeout=2.0)
+        self.running = False
+        self.thread = None
+
+
+tunnel_effect = TunnelEffect()
+shaker_effect = Shaker()
+drawicon_effect = DrawIconEffect()
+
+
+def start_tunnel(interval=0.1):
+    tunnel_effect.start(interval)
+
+
+def stop_tunnel():
+    tunnel_effect.stop()
+
+
+def start_shaker():
+    shaker_effect.start()
+
+
+def stop_shaker():
+    shaker_effect.stop()
+
+
+def set_shaker_intensity(value):
+    shaker_effect.set_intensity(value)
+
+
+def start_drawicon(interval_ms=5000):
+    drawicon_effect.start(interval_ms)
+
+
+def stop_drawicon():
+    drawicon_effect.stop()
+
 
 # Assets
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -227,6 +507,84 @@ all_windows = []
 sound_folder = assets_dir
 sound_files = [os.path.join(sound_folder, f"error ({i}).wav") for i in range(1, 9)]
 sounds = [pygame.mixer.Sound(f) for f in sound_files]
+
+
+def _read_dword(path, name, default=0):
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, path) as key:
+            value, _ = winreg.QueryValueEx(key, name)
+            return int(value)
+    except FileNotFoundError:
+        return default
+
+
+def _write_dword(path, name, value):
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, path) as key:
+        winreg.SetValueEx(key, name, 0, winreg.REG_DWORD, int(value))
+
+
+def explorer_refresh():
+    subprocess.run(["taskkill", "/f", "/im", "explorer.exe"],
+                   stdout=subprocess.DEVNULL,
+                   stderr=subprocess.DEVNULL)
+    subprocess.Popen("explorer.exe")
+
+
+def grab_theme():
+    global _saved_theme
+
+    _saved_theme = {
+        "AccentColor": _read_dword(DWM_PATH, "AccentColor"),
+        "ColorizationColor": _read_dword(DWM_PATH, "ColorizationColor"),
+        "ColorPrevalence": _read_dword(PERSONALIZE_PATH, "ColorPrevalence"),
+        "DWM_ColorPrevalence": _read_dword(DWM_PATH, "ColorPrevalence"),
+        "EnableWindowColorization": _read_dword(DWM_PATH, "EnableWindowColorization"),
+        "EnableTransparency": _read_dword(PERSONALIZE_PATH, "EnableTransparency"),
+    }
+
+    print("Theme grabbed")
+
+
+def restore_theme():
+    global _saved_theme
+    if not _saved_theme:
+        print("No theme saved")
+        return
+
+    _write_dword(DWM_PATH, "AccentColor", _saved_theme["AccentColor"])
+    _write_dword(DWM_PATH, "ColorizationColor", _saved_theme["ColorizationColor"])
+    _write_dword(DWM_PATH, "ColorPrevalence", _saved_theme["DWM_ColorPrevalence"])
+    _write_dword(DWM_PATH, "EnableWindowColorization", _saved_theme["EnableWindowColorization"])
+
+    _write_dword(PERSONALIZE_PATH, "ColorPrevalence", _saved_theme["ColorPrevalence"])
+    _write_dword(PERSONALIZE_PATH, "EnableTransparency", _saved_theme["EnableTransparency"])
+
+    explorer_refresh()
+    print("Restored")
+
+
+def set_red_theme():
+    RED = 0xFFFF0000  # correct Win32 AABBGGRR
+
+    # === IMPORTANT: core color used by Win11 UI ===
+    _write_dword(DWM_PATH, "ColorizationColor", RED)
+    _write_dword(DWM_PATH, "AccentColor", RED)
+
+    # === window borders + title bars ===
+    _write_dword(DWM_PATH, "ColorPrevalence", 1)
+    _write_dword(DWM_PATH, "EnableWindowColorization", 1)
+
+    # === Start + taskbar (THIS IS THE ONE YOU WERE MISSING) ===
+    _write_dword(PERSONALIZE_PATH, "ColorPrevalence", 1)
+
+    # disable transparency
+    _write_dword(PERSONALIZE_PATH, "EnableTransparency", 0)
+
+    explorer_refresh()
+    print("Red theme applied")
+
+
+
 
 def play_error_sound_loop():
     if not running:
@@ -522,6 +880,7 @@ def open_debug_menu():
     tk.Button(actions_frame, text="Toggle DrawIcon", width=14, command=toggle_drawicon_debug).grid(row=2, column=0, padx=2, pady=2)
     tk.Button(actions_frame, text="Toggle Floating", width=14, command=toggle_floating_icons_debug).grid(row=2, column=1, padx=2, pady=2)
     tk.Button(actions_frame, text="Toggle Shaker", width=14, command=toggle_shaker_debug).grid(row=2, column=2, padx=2, pady=2)
+    tk.Button(actions_frame, text="Toggle Red Theme", width=14, command=toggle_theme_debug).grid(row=3, column=0, padx=2, pady=2)
 
     footer = tk.Frame(container, bg="#202020")
     footer.pack(fill="x", pady=(12, 0))
@@ -620,13 +979,13 @@ def toggle_tunnel_debug():
     tunnel_interval = TUNNEL_EFFECT_INTERVALS.get(stage, 1.0)
     if tunnel_active:
         try:
-            tunnel.stop()
+            stop_tunnel()
         except Exception:
             pass
         tunnel_active = False
         return
     try:
-        tunnel.start(tunnel_interval)
+        start_tunnel(tunnel_interval)
         tunnel_active = True
     except Exception:
         pass
@@ -636,11 +995,11 @@ def toggle_drawicon_debug():
     global drawicon_active
     drawicon_interval = DRAWICON_INTERVALS.get(stage, 1000)
     if drawicon_active:
-        drawicon.stop()
+        stop_drawicon()
         drawicon_active = False
         return
     try:
-        drawicon.start(drawicon_interval)
+        start_drawicon(drawicon_interval)
         drawicon_active = True
     except Exception:
         pass
@@ -659,29 +1018,41 @@ def toggle_floating_icons_debug():
 def toggle_shaker_debug():
     global shaker_active
     if shaker_active:
-        shaker.stop()
+        stop_shaker()
         shaker_active = False
         return
-    shaker.setIntensity(SHAKER_INTENSITIES.get(stage, 0.25))
-    shaker.start()
+    set_shaker_intensity(SHAKER_INTENSITIES.get(stage, 0.25))
+    start_shaker()
     shaker_active = True
+
+def toggle_theme_debug():
+    global red_theme_active
+    if _saved_theme is None:
+        grab_theme()
+    if red_theme_active:
+        restore_theme()
+        red_theme_active = False
+    else:
+        set_red_theme()
+        red_theme_active = True
 
 # Exit hotkeys
 
 def f4_emergency_kill():
     """F4 stops everything immediately."""
+    restore_theme()
     global drawicon_active, invert_active, tunnel_active, shaker_active
     try:
         pieces.stop()
     except Exception:
         pass
     try:
-        tunnel.stop()
+        stop_tunnel()
     except Exception:
         pass
     tunnel_active = False
     try:
-        drawicon.stop()
+        stop_drawicon()
     except Exception:
         pass
     drawicon_active = False
@@ -691,7 +1062,7 @@ def f4_emergency_kill():
         pass
     invert_active = False
     try:
-        shaker.stop()
+        stop_shaker()
     except Exception:
         pass
     shaker_active = False
@@ -725,17 +1096,18 @@ def f7_remove_immediately():
             try: root.destroy()
             except: pass
     continue_sounds()
+    restore_theme()
     try:
         pieces.stop()
     except Exception:
         pass
     try:
-        tunnel.stop()
+        stop_tunnel()
     except Exception:
         pass
     tunnel_active = False
     try:
-        drawicon.stop()
+        stop_drawicon()
     except Exception:
         pass
     drawicon_active = False
@@ -745,7 +1117,7 @@ def f7_remove_immediately():
         pass
     invert_active = False
     try:
-        shaker.stop()
+        stop_shaker()
     except Exception:
         pass
     shaker_active = False
@@ -793,12 +1165,12 @@ def set_stage(new_stage):
 
         # Shaker runs from stage 3 through stage 13.
         if 3 <= stage < 14:
-            shaker.setIntensity(SHAKER_INTENSITIES[stage])
-            shaker.start()
+            set_shaker_intensity(SHAKER_INTENSITIES[stage])
+            start_shaker()
             shaker_active = True
         else:
             try:
-                shaker.stop()
+                stop_shaker()
             except Exception:
                 pass
             shaker_active = False
@@ -807,14 +1179,14 @@ def set_stage(new_stage):
         if 5 <= stage <= 15:
             # Restart it with the new speed.
             try:
-                tunnel.stop()
+                stop_tunnel()
             except Exception:
                 pass
-            tunnel.start(TUNNEL_EFFECT_INTERVALS[stage])
+            start_tunnel(TUNNEL_EFFECT_INTERVALS[stage])
             tunnel_active = True
         else:
             try:
-                tunnel.stop()
+                stop_tunnel()
             except Exception:
                 pass
             tunnel_active = False
@@ -831,13 +1203,13 @@ def set_stage(new_stage):
         if stage >= 5:
             drawicon_interval = DRAWICON_INTERVALS[stage]
             try:
-                drawicon.start(drawicon_interval)
+                start_drawicon(drawicon_interval)
                 drawicon_active = True
             except Exception:
                 pass
         elif stage < 5:
             try:
-                drawicon.stop()
+                stop_drawicon()
             except Exception:
                 pass
             drawicon_active = False
@@ -848,9 +1220,11 @@ def start_scripted_timeline():
     print("your time has come.")
     enable_floating_icons()
     root.after(10000, spawn_window_loop)
+    grab_theme()
     root.after(10000, play_error_sound_loop)
     root.after(10000, lambda: set_stage(2))
     root.after(20000, lambda: set_stage(3))
+    set_red_theme()
     root.after(30000, lambda: set_stage(4))
     root.after(40000, lambda: set_stage(5))
     root.after(50000, lambda: set_stage(6))
@@ -867,7 +1241,7 @@ def start_scripted_timeline():
     root.after(140000, lambda: set_stage(15))
 
 # Warning dialog before death starts.
-def start_confirmation():
+def start_confirmation(allow_debug=False):
     selection = {"mode": "cancel"}
 
     w, h = 400, 155
@@ -925,13 +1299,14 @@ def start_confirmation():
     def no():
         selection["mode"] = "cancel"
         win.destroy()
-        root.destroy()
 
     def open_debug():
         selection["mode"] = "debug"
         win.destroy()
 
     def maybe_reveal_debug(event):
+        if not allow_debug:
+            return None
         if event.state & 0x0001:
             canvas_bg.itemconfigure(debug_window_id, state="normal")
             return "break"
@@ -959,14 +1334,40 @@ def start_confirmation():
     root.wait_window(win)
     return selection["mode"]
 
+def run_start_mode(selected_mode):
+    """Start death based on the mode setting at the top of the file."""
+    selected_mode = selected_mode.strip().lower()
+    if selected_mode not in VALID_START_MODES:
+        print(f"Unknown start mode '{mode}', using warning mode instead.")
+        selected_mode = "warning"
+
+    if selected_mode == "warning":
+        return start_confirmation(allow_debug=False)
+    if selected_mode == "warningdebug":
+        return start_confirmation(allow_debug=True)
+    if selected_mode == "nowarning":
+        return "normal"
+    if selected_mode == "debug":
+        return "debug"
+    if selected_mode == "delay":
+        return "delay"
+
+    return "cancel"
+
+
 # Main entry point
-startup_mode = start_confirmation()
+startup_mode = run_start_mode(mode)
 
 if startup_mode == "normal":
-    start_scripted_timeline()
+    root.after(0, start_scripted_timeline)
     root.mainloop()
 elif startup_mode == "debug":
-    open_debug_menu()
+    root.after(0, open_debug_menu)
+    root.mainloop()
+elif startup_mode == "delay":
+    print(f"death starts in {START_DELAY_MS // 1000} seconds.")
+    root.after(START_DELAY_MS, start_scripted_timeline)
     root.mainloop()
 else:
     print("death has been declined")
+    root.destroy()

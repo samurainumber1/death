@@ -14,8 +14,6 @@ import time
 import ctypes
 import threading
 from ctypes import wintypes
-import pieces
-import invert
 
 ##################
 ### Start Mode ###
@@ -222,6 +220,7 @@ red_theme_active = False
 
 # Win32 desktop effects
 SRCCOPY = 0x00CC0020
+NOTSRCCOPY = 0x00330008
 SM_CXICON = 11
 SM_CYICON = 12
 SM_CXSCREEN = 0
@@ -238,6 +237,49 @@ ReleaseDC = user32.ReleaseDC
 GetWindowRect = user32.GetWindowRect
 StretchBlt = gdi32.StretchBlt
 BitBlt = gdi32.BitBlt
+CreateCompatibleDC = gdi32.CreateCompatibleDC
+CreateCompatibleBitmap = gdi32.CreateCompatibleBitmap
+SelectObject = gdi32.SelectObject
+DeleteObject = gdi32.DeleteObject
+DeleteDC = gdi32.DeleteDC
+
+GetDesktopWindow.restype = wintypes.HWND
+GetWindowDC.argtypes = [wintypes.HWND]
+GetWindowDC.restype = wintypes.HDC
+ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+GetWindowRect.argtypes = [wintypes.HWND, ctypes.c_void_p]
+BitBlt.argtypes = [
+    wintypes.HDC,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,
+    wintypes.HDC,
+    ctypes.c_int,
+    ctypes.c_int,
+    wintypes.DWORD,
+]
+StretchBlt.argtypes = [
+    wintypes.HDC,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,
+    wintypes.HDC,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,
+    wintypes.DWORD,
+]
+CreateCompatibleDC.argtypes = [wintypes.HDC]
+CreateCompatibleDC.restype = wintypes.HDC
+CreateCompatibleBitmap.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int]
+CreateCompatibleBitmap.restype = wintypes.HBITMAP
+SelectObject.argtypes = [wintypes.HDC, wintypes.HGDIOBJ]
+SelectObject.restype = wintypes.HGDIOBJ
+DeleteObject.argtypes = [wintypes.HGDIOBJ]
+DeleteDC.argtypes = [wintypes.HDC]
 
 
 class RECT(ctypes.Structure):
@@ -255,6 +297,210 @@ class POINT(ctypes.Structure):
 
 def _make_resource_id(res_id):
     return ctypes.cast(ctypes.c_void_p(res_id), wintypes.LPCWSTR)
+
+
+def _normalize_interval_ms(timer_ms):
+    return max(1, int(timer_ms))
+
+
+def _get_desktop_rect():
+    hwnd = GetDesktopWindow()
+    rect = RECT()
+    GetWindowRect(hwnd, ctypes.byref(rect))
+    return hwnd, rect
+
+
+class ScreenBitmapBackup:
+    """Stores and restores one snapshot of the desktop."""
+
+    def __init__(self):
+        self.bitmap = None
+
+    def capture(self):
+        self.delete()
+        hwnd = GetDesktopWindow()
+        hdc = GetWindowDC(hwnd)
+        memdc = CreateCompatibleDC(hdc)
+        old_object = None
+        try:
+            rect = RECT()
+            GetWindowRect(hwnd, ctypes.byref(rect))
+            width = rect.right - rect.left
+            height = rect.bottom - rect.top
+            self.bitmap = CreateCompatibleBitmap(hdc, width, height)
+            old_object = SelectObject(memdc, self.bitmap)
+            BitBlt(memdc, 0, 0, width, height, hdc, 0, 0, SRCCOPY)
+        finally:
+            if old_object:
+                SelectObject(memdc, old_object)
+            DeleteDC(memdc)
+            ReleaseDC(hwnd, hdc)
+
+    def restore(self):
+        if not self.bitmap:
+            return
+
+        hwnd = GetDesktopWindow()
+        hdc = GetWindowDC(hwnd)
+        memdc = CreateCompatibleDC(hdc)
+        old_object = None
+        try:
+            rect = RECT()
+            GetWindowRect(hwnd, ctypes.byref(rect))
+            width = rect.right - rect.left
+            height = rect.bottom - rect.top
+            old_object = SelectObject(memdc, self.bitmap)
+            BitBlt(hdc, 0, 0, width, height, memdc, 0, 0, SRCCOPY)
+        finally:
+            if old_object:
+                SelectObject(memdc, old_object)
+            DeleteDC(memdc)
+            ReleaseDC(hwnd, hdc)
+            self.delete()
+
+    def delete(self):
+        if self.bitmap:
+            DeleteObject(self.bitmap)
+            self.bitmap = None
+
+
+class PiecesEffect:
+    """Copies random desktop rectangles around on a loop."""
+
+    def __init__(self):
+        self.running = False
+        self.paused = False
+        self.interval_ms = 5000
+        self.thread = None
+        self.backup = ScreenBitmapBackup()
+
+    def start(self, timer_ms=5000):
+        self.interval_ms = _normalize_interval_ms(timer_ms)
+        if self.running:
+            return
+
+        self.backup.capture()
+        self.running = True
+        self.paused = False
+        self.thread = threading.Thread(target=self._loop, daemon=True)
+        self.thread.start()
+
+    def _loop(self):
+        hwnd, rect = _get_desktop_rect()
+        hdc = GetWindowDC(hwnd)
+        screen_width = rect.right - rect.left
+        screen_height = rect.bottom - rect.top
+        try:
+            while self.running:
+                if not self.paused:
+                    x1 = random.randrange(max(1, screen_width - 100))
+                    y1 = random.randrange(max(1, screen_height - 100))
+                    x2 = random.randrange(max(1, screen_width - 100))
+                    y2 = random.randrange(max(1, screen_height - 100))
+                    width = max(50, random.randrange(600))
+                    height = max(50, random.randrange(600))
+
+                    if x1 + width > screen_width:
+                        width = max(1, screen_width - x1)
+                    if y1 + height > screen_height:
+                        height = max(1, screen_height - y1)
+                    if x2 + width > screen_width:
+                        x2 = max(0, screen_width - width)
+                    if y2 + height > screen_height:
+                        y2 = max(0, screen_height - height)
+
+                    BitBlt(hdc, x1, y1, width, height, hdc, x2, y2, SRCCOPY)
+
+                self._sleep_until_next_frame()
+        finally:
+            ReleaseDC(hwnd, hdc)
+
+    def _sleep_until_next_frame(self):
+        remaining_ms = _normalize_interval_ms(self.interval_ms)
+        while self.running and remaining_ms > 0:
+            sleep_chunk_ms = min(remaining_ms, 10)
+            time.sleep(sleep_chunk_ms / 1000.0)
+            remaining_ms -= sleep_chunk_ms
+            updated_interval = _normalize_interval_ms(self.interval_ms)
+            if updated_interval < remaining_ms:
+                remaining_ms = updated_interval
+
+    def timer(self, timer_ms):
+        self.interval_ms = _normalize_interval_ms(timer_ms)
+
+    def is_running(self):
+        return self.running
+
+    def pause(self):
+        self.paused = True
+
+    def resume(self):
+        self.paused = False
+
+    def stop(self):
+        self.running = False
+        self.paused = False
+        if self.thread:
+            self.thread.join(timeout=2.0)
+        self.thread = None
+        self.backup.restore()
+
+
+class InvertEffect:
+    """Inverts the desktop pixels on a loop."""
+
+    def __init__(self):
+        self.running = False
+        self.interval_ms = 1000
+        self.thread = None
+        self.backup = ScreenBitmapBackup()
+
+    def start(self, timer_ms=1000):
+        self.interval_ms = _normalize_interval_ms(timer_ms)
+        if self.running:
+            return 100
+
+        self.backup.capture()
+        self.running = True
+        self.thread = threading.Thread(target=self._loop, daemon=True)
+        self.thread.start()
+        return 100
+
+    def _loop(self):
+        while self.running:
+            hwnd, rect = _get_desktop_rect()
+            hdc = GetWindowDC(hwnd)
+            try:
+                width = rect.right - rect.left
+                height = rect.bottom - rect.top
+                BitBlt(hdc, 0, 0, width, height, hdc, 0, 0, NOTSRCCOPY)
+            finally:
+                ReleaseDC(hwnd, hdc)
+
+            self._sleep_until_next_frame()
+
+    def _sleep_until_next_frame(self):
+        remaining_ms = _normalize_interval_ms(self.interval_ms)
+        while self.running and remaining_ms > 0:
+            sleep_chunk_ms = min(remaining_ms, 10)
+            time.sleep(sleep_chunk_ms / 1000.0)
+            remaining_ms -= sleep_chunk_ms
+            remaining_ms = min(remaining_ms, _normalize_interval_ms(self.interval_ms))
+
+    def stop(self):
+        if not self.running:
+            return 100
+
+        self.running = False
+        if self.thread:
+            self.thread.join(timeout=2.0)
+        self.thread = None
+        self.backup.restore()
+        return 100
+
+    def set_interval(self, timer_ms):
+        self.interval_ms = _normalize_interval_ms(timer_ms)
+        return 100
 
 
 class TunnelEffect:
@@ -443,9 +689,39 @@ class DrawIconEffect:
         self.thread = None
 
 
+pieces_effect = PiecesEffect()
+invert_effect = InvertEffect()
 tunnel_effect = TunnelEffect()
 shaker_effect = Shaker()
 drawicon_effect = DrawIconEffect()
+
+
+def start_pieces(timer_ms=5000):
+    pieces_effect.start(timer_ms)
+
+
+def stop_pieces():
+    pieces_effect.stop()
+
+
+def is_pieces_running():
+    return pieces_effect.is_running()
+
+
+def set_pieces_timer(timer_ms):
+    pieces_effect.timer(timer_ms)
+
+
+def start_invert(timer_ms=1000):
+    return invert_effect.start(timer_ms)
+
+
+def stop_invert():
+    return invert_effect.stop()
+
+
+def set_invert_interval(timer_ms):
+    return invert_effect.set_interval(timer_ms)
 
 
 def start_tunnel(interval=0.1):
@@ -948,27 +1224,27 @@ def disable_floating_icons():
 
 
 def toggle_pieces_debug():
-    if pieces.is_running():
-        pieces.stop()
+    if is_pieces_running():
+        stop_pieces()
         return
     pieces_interval = PIECES_TIMER_SETTINGS.get(stage, 5000)
-    pieces.timer(pieces_interval)
-    pieces.start(pieces_interval)
+    set_pieces_timer(pieces_interval)
+    start_pieces(pieces_interval)
 
 
 def toggle_invert_debug():
     global invert_active
     invert_interval = INVERT_INTERVALS.get(stage, 5000)
     if invert_active:
-        invert.stop()
+        stop_invert()
         invert_active = False
         return
     try:
-        invert.setinterval(invert_interval)
+        set_invert_interval(invert_interval)
     except Exception:
         pass
     try:
-        invert.start(invert_interval)
+        start_invert(invert_interval)
         invert_active = True
     except Exception:
         pass
@@ -1043,7 +1319,7 @@ def f4_emergency_kill():
     restore_theme()
     global drawicon_active, invert_active, tunnel_active, shaker_active
     try:
-        pieces.stop()
+        stop_pieces()
     except Exception:
         pass
     try:
@@ -1057,7 +1333,7 @@ def f4_emergency_kill():
         pass
     drawicon_active = False
     try:
-        invert.stop()
+        stop_invert()
     except Exception:
         pass
     invert_active = False
@@ -1098,7 +1374,7 @@ def f7_remove_immediately():
     continue_sounds()
     restore_theme()
     try:
-        pieces.stop()
+        stop_pieces()
     except Exception:
         pass
     try:
@@ -1112,7 +1388,7 @@ def f7_remove_immediately():
         pass
     drawicon_active = False
     try:
-        invert.stop()
+        stop_invert()
     except Exception:
         pass
     invert_active = False
@@ -1135,12 +1411,12 @@ def set_stage(new_stage):
         # Pieces effect
         if stage >= 3:
             pieces_interval = PIECES_TIMER_SETTINGS[stage]
-            pieces.timer(pieces_interval)
-            if not pieces.is_running():
-                pieces.start(pieces_interval)
+            set_pieces_timer(pieces_interval)
+            if not is_pieces_running():
+                start_pieces(pieces_interval)
         elif stage < 3:
             try:
-                pieces.stop()
+                stop_pieces()
             except Exception:
                 pass
 
@@ -1148,17 +1424,17 @@ def set_stage(new_stage):
         if stage >= 4:
             invert_interval = INVERT_INTERVALS[stage]
             try:
-                invert.setinterval(invert_interval)
+                set_invert_interval(invert_interval)
             except Exception:
                 pass
             try:
-                invert.start(invert_interval)
+                start_invert(invert_interval)
                 invert_active = True
             except Exception:
                 pass
         elif stage < 4:
             try:
-                invert.stop()
+                stop_invert()
             except Exception:
                 pass
             invert_active = False
